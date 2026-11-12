@@ -25,7 +25,8 @@ GENE_COLUMNS = (
     "max_condition", "max_track", "max_imputation_mode",
 )
 CONDITION_STATUSES = (
-    "complete", "partial", "api_error", "not_attempted", "no_rows", "no_eligible", "no_finite_scores",
+    "complete", "partial", "api_error", "not_attempted", "no_rows", "no_gene_rows",
+    "no_eligible", "no_finite_scores",
 )
 VARIANT_COLUMNS = (
     *INPUT_KEY, "evaluation_status", "threshold", "threshold_result", "candidate_genes",
@@ -145,6 +146,7 @@ def read_requests(run_dir: Path, inputs: list[InputRow], conditions: dict[str, l
 
 def read_scores(run_dir: Path, requests: dict):
     row_counts = Counter()
+    gene_rows = Counter()
     observed = Counter()
     finite = Counter()
     genes = defaultdict(dict)
@@ -159,7 +161,10 @@ def read_scores(run_dir: Path, requests: dict):
             raise ValueError("scores.tsv expression rows require gene_id and track_name columns.")
         row_counts[key] += 1
         gene_id = row["gene_id"]
-        if not gene_id or row["imputation_mode"] != "observed":
+        if not gene_id:
+            continue
+        gene_rows[key] += 1
+        if row["imputation_mode"] != "observed":
             continue
         observed[key] += 1
         value = float(row["raw_score"] or "nan")
@@ -174,13 +179,15 @@ def read_scores(run_dir: Path, requests: dict):
     for key, (_, expected) in requests.items():
         if row_counts[key] != expected:
             raise ValueError(f"Score row count differs from requests.tsv for {key}: {row_counts[key]} vs {expected}.")
-    return genes, observed, finite
+    return genes, gene_rows, observed, finite
 
 
-def condition_status(request: tuple[str, int], observed_count: int, finite_count: int) -> str:
+def condition_status(request: tuple[str, int], gene_count: int, observed_count: int, finite_count: int) -> str:
     status, _ = request
     if status != "scored":
         return status
+    if gene_count == 0:
+        return "no_gene_rows"
     if observed_count == 0:
         return "no_eligible"
     if finite_count == 0:
@@ -188,7 +195,7 @@ def condition_status(request: tuple[str, int], observed_count: int, finite_count
     return "complete" if finite_count == observed_count else "partial"
 
 
-def write_summaries(output: Path, inputs, conditions, thresholds, requests, genes, observed, finite) -> None:
+def write_summaries(output: Path, inputs, conditions, thresholds, requests, genes, gene_rows, observed, finite) -> None:
     with (output / "gene_summary.tsv").open("w", encoding="utf-8", newline="") as gene_handle, (
         output / "variant_summary.tsv"
     ).open("w", encoding="utf-8", newline="") as variant_handle:
@@ -212,7 +219,7 @@ def write_summaries(output: Path, inputs, conditions, thresholds, requests, gene
                     request_key = (row.input_id, condition, scorer)
                     statuses[condition] = condition_status(
                         requests.get(request_key, ("not_attempted", 0)),
-                        observed[request_key], finite[request_key],
+                        gene_rows[request_key], observed[request_key], finite[request_key],
                     )
                 counts = Counter(statuses.values())
                 evaluation = "unavailable"
@@ -265,10 +272,10 @@ def summarize(run_dir: Path, output: Path, thresholds: dict[str, float]) -> None
             raise ValueError(f"Thresholds provided for unrequested scorers: {', '.join(sorted(unknown))}.")
         inputs = read_inputs(run_dir)
         requests = read_requests(run_dir, inputs, conditions)
-        genes, observed, finite = read_scores(run_dir, requests)
+        genes, gene_rows, observed, finite = read_scores(run_dir, requests)
 
     output.mkdir(parents=True)
-    write_summaries(output, inputs, conditions, thresholds, requests, genes, observed, finite)
+    write_summaries(output, inputs, conditions, thresholds, requests, genes, gene_rows, observed, finite)
     metadata = {
         "source_run": str(run_dir.resolve()),
         "source_request": manifest,

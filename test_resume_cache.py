@@ -177,7 +177,7 @@ class ResumeCacheCliTest(unittest.TestCase):
         key.assert_not_called()
         self.create.assert_not_called()
         self.assertFalse(self.cache.exists())
-        self.assertIn("Planned uncached score calls: 1", stdout.getvalue().splitlines())
+        self.assertIn("Uncached score calls (upper bound): 1", stdout.getvalue().splitlines())
 
         seed = self.directory / "seed"
         self.model.score_variant.return_value = [score_row(0.4, "observed")]
@@ -190,7 +190,48 @@ class ResumeCacheCliTest(unittest.TestCase):
         key.assert_not_called()
         self.create.assert_not_called()
         self.assertIn("Planned score calls: 4", stdout.getvalue().splitlines())
-        self.assertIn("Planned uncached score calls: 3", stdout.getvalue().splitlines())
+        self.assertIn("Uncached score calls (upper bound): 3", stdout.getvalue().splitlines())
+
+    def test_cache_aware_dry_run_bounds_calls_for_duplicate_alleles(self):
+        condition = CONDITIONS[0]
+        self.write_variants("v1\tchr22\t600001\tA\tC\nv2\tchr22\t600001\tA\tC\n")
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            self.assertEqual(self.start(None, (condition,), (RNA,), use_cache=True, dry_run=True), 0)
+        self.create.assert_not_called()
+        self.assertIn("Uncached score calls (upper bound): 2", stdout.getvalue().splitlines())
+
+        output = self.directory / "duplicate-alleles"
+        self.model.score_variant.return_value = [score_row(0.125, "observed")]
+        self.assertEqual(self.start(output, (condition,), (RNA,), use_cache=True), 0)
+        self.model.score_variant.assert_called_once()
+        self.assert_call_counts(output, planned=2, attempted=1)
+        self.assertEqual({
+            row["input_id"]: row["source"] for row in self.read_rows(output, "requests.tsv")
+        }, {"v1": "api", "v2": "cache"})
+
+    def test_resume_repopulates_cache_after_a_stopped_shared_write(self):
+        condition = CONDITIONS[0]
+        output = self.directory / "interrupted-cache-write"
+        self.model.score_variant.return_value = [score_row(0.25, "observed")]
+        with mock.patch.object(score.SharedCache, "save", side_effect=AbruptStop()) as save:
+            with self.assertRaises(AbruptStop):
+                self.start(output, (condition,), (RNA,), use_cache=True)
+        self.model.score_variant.assert_called_once()
+        save.assert_called_once()
+
+        peer = self.directory / "peer-after-resume"
+        self.create.reset_mock()
+        with mock.patch.object(score, "api_key_from_file_or_environment") as key:
+            self.assertEqual(self.invoke("--resume", str(output)), 0)
+            self.assertEqual(self.start(peer, (condition,), (RNA,), use_cache=True), 0)
+        key.assert_not_called()
+        self.create.assert_not_called()
+        self.assert_call_counts(output, planned=1, attempted=1)
+        self.assert_call_counts(peer, planned=1, attempted=0)
+        self.assertEqual(self.read_rows(output, "requests.tsv")[0]["source"], "api")
+        self.assertEqual(self.read_rows(peer, "requests.tsv")[0]["source"], "cache")
+        self.assertEqual(self.read_rows(peer, "scores.tsv"), self.read_rows(output, "scores.tsv"))
 
     def test_resume_uses_its_saved_cache_dir_for_a_failed_condition(self):
         first, second = CONDITIONS

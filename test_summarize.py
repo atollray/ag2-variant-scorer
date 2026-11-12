@@ -223,3 +223,22 @@ class SummarizeCliTest(unittest.TestCase):
         row, = self.read_tsv("variant_summary.tsv")
         self.assertEqual((row["evaluation_status"], row["threshold_result"]), ("unavailable", "not_evaluated"))
         self.assertEqual(int(row["conditions_no_rows"]), 1)
+
+    def test_scored_rows_without_gene_ids_are_distinct_from_unobserved_gene_rows(self):
+        self.write_run(
+            ["v1"], {CONE: [RNA], RPE: [RNA]},
+            [(("v1", CONE, RNA), "scored"), (("v1", RPE, RNA), "scored")],
+            [
+                ("v1", CONE, RNA, "", "", "observed track", 0.75, "observed"),
+                ("v1", RPE, RNA, "ENSG1", "FIRST", "imputed track", 0.75, "imputed_supported"),
+            ],
+        )
+
+        self.run_cli(f"{RNA}=0.5")
+
+        self.assertEqual(self.read_tsv("gene_summary.tsv"), [])
+        row, = self.read_tsv("variant_summary.tsv")
+        self.assertEqual((row["evaluation_status"], row["threshold_result"]), ("unavailable", "not_evaluated"))
+        self.assertEqual(json.loads(row["condition_statuses"]), {CONE: "no_gene_rows", RPE: "no_eligible"})
+        self.assertEqual(int(row["conditions_no_gene_rows"]), 1)
+        self.assertEqual(int(row["conditions_no_eligible"]), 1)

@@ -175,7 +175,7 @@ def preview(plan: dict, cache_dir: Path | None) -> None:
             cached += hits
             uncached += hits < len(names)
     print(f"Cached scorer results: {cached}")
-    print(f"Planned uncached score calls: {uncached}")
+    print(f"Uncached score calls (upper bound): {uncached}")
 
 
 def condition_metadata(model, conditions: list[str]) -> dict[str, str]:
@@ -189,7 +189,20 @@ def condition_metadata(model, conditions: list[str]) -> dict[str, str]:
     }
 
 
-def acquire_scores(state: RunStore, plan: dict, cache: SharedCache | None, api_key_file: Path | None):
+def save_cache(cache: SharedCache, group_key: str, plan: dict, condition_tsv: str, outcomes: dict) -> None:
+    entries = {
+        scorer_key(plan, name): CachedScore(
+            result.payload, result.row_count, condition_tsv, result.retrieved_at_utc
+        )
+        for name, result in outcomes.items() if result.status == "scored"
+    }
+    if entries:
+        cache.save(group_key, entries)
+
+
+def acquire_scores(
+    state: RunStore, plan: dict, cache: SharedCache | None, api_key_file: Path | None, *, restore_cache: bool
+):
     model = None
     settings = scoring_settings()
     condition_rows = state.get_conditions()
@@ -198,13 +211,26 @@ def acquire_scores(state: RunStore, plan: dict, cache: SharedCache | None, api_k
     for input_id, variant, interval, condition, names in work_items(plan):
         previous = state.get_group(input_id, condition)
         pending = [name for name in names if name not in previous or previous[name].status == "api_error"]
-        if not pending:
+        if not pending and (cache is None or not restore_cache):
             continue
 
-        group_key = request_key(variant, interval, condition, settings) if cache else ""
+        group_key = request_key(variant, interval, condition, settings) if cache is not None else ""
+        backfill = {}
+        if cache is not None and restore_cache:
+            backfill = {
+                name: result for name, result in previous.items()
+                if result.status == "scored" and result.source == "api"
+                and not cache.contains(group_key, scorer_key(plan, name))
+            }
+        if not pending and not backfill:
+            continue
+
         with cache.lock(group_key) if cache else nullcontext():
             hits = {}
             if cache is not None:
+                if backfill:
+                    # The run can have committed its response just before cache publication stopped.
+                    save_cache(cache, group_key, plan, condition_rows[condition], backfill)
                 for name in pending:
                     hit = cache.lookup(group_key, scorer_key(plan, name))
                     if hit is not None:
@@ -257,12 +283,7 @@ def acquire_scores(state: RunStore, plan: dict, cache: SharedCache | None, api_k
                     )
             state.record(input_id, condition, outcomes)
             if cache is not None:
-                cache.save(group_key, {
-                    scorer_key(plan, name): CachedScore(
-                        result.payload, result.row_count, condition_rows[condition], result.retrieved_at_utc
-                    )
-                    for name, result in outcomes.items() if result.status == "scored"
-                })
+                save_cache(cache, group_key, plan, condition_rows[condition], outcomes)
             print(f"{input_id}, {condition}: scored {len(pending)} requested scorers", flush=True)
     return None
 
@@ -363,15 +384,16 @@ def write_exports(output: Path, state: RunStore, plan: dict, error: str | None, 
     pending_manifest.replace(manifest)
 
 
-def execute(output: Path, state: RunStore, plan: dict, cache_dir: Path | None, api_key_file: Path | None) -> int:
+def execute(
+    output: Path, state: RunStore, plan: dict, cache_dir: Path | None, api_key_file: Path | None,
+    *, restore_cache: bool = False,
+) -> int:
     error = None
     interrupted = False
     try:
-        metadata = plan["metadata"]
-        expected = metadata["verified_variants"] * sum(map(len, metadata["condition_scorers"].values()))
-        open_cache = cache_dir is not None and state.completed_outcomes < expected
+        open_cache = cache_dir is not None and bool(plan["variants"])
         with closing(SharedCache(cache_dir)) if open_cache else nullcontext() as cache:
-            error = acquire_scores(state, plan, cache, api_key_file)
+            error = acquire_scores(state, plan, cache, api_key_file, restore_cache=restore_cache)
     except grpc.FutureTimeoutError:
         error = "CONNECT_TIMEOUT"
         print("Timed out connecting to the AlphaGenome API.", file=sys.stderr)
@@ -455,7 +477,7 @@ def resume(output: Path, cache_dir: Path | None, api_key_file: Path | None) -> i
             raise ValueError("The saved variants.tsv differs from the original run.")
         if cache_dir is None and plan["cache_dir"] is not None:
             cache_dir = Path(plan["cache_dir"])
-        return execute(output, state, plan, cache_dir, api_key_file)
+        return execute(output, state, plan, cache_dir, api_key_file, restore_cache=True)
 
 
 def main() -> int:

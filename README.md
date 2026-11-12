@@ -61,7 +61,7 @@ apol4	chr22	36201698	A	C
 
 別の実行で取得済みスコアを再利用する場合は `--cache-dir 'C:\path\to\cache\ag2'` を追加する。指定は任意で、再開時は保存済みの指定を引き継ぐ。同じ変異・窓・条件・モデル指定・SDK版でscorer設定が一致する結果を再利用し、未取得のscorerを条件ごとにまとめる。行が返らなかった取得は、その実行内の完了として扱う。別実行間のキャッシュにはスコア行がある応答を保存する。
 
-`--dry-run --cache-dir ...` では、既存キャッシュだけを読み、命中したscorer件数と新規取得の予定件数を追加表示する。実行後の `requests.tsv` には `api`／`cache` と、元の取得時刻 `retrieved_at_utc` を記録する。`request.json` の `attempted_score_calls` はCLIが開始した `score_variant()` の累計で、SDK内部の再試行はこの件数に含めない。[SDKの再試行設定](https://github.com/google-deepmind/alphagenome/blob/v2.0.0/src/alphagenome/protos/v2/grpc_service_config.json)
+`--dry-run --cache-dir ...` では、既存キャッシュだけを読み、命中したscorer件数と新規取得件数の上限を追加表示する。同じ変異・条件を複数の入力行で指定した場合は、最初の取得結果を同じ実行の後続行でも使えるため、実行件数が上限より少なくなることがある。再開時は、実行DBに保存済みの応答で共有キャッシュの不足分を補う。実行後の `requests.tsv` には `api`／`cache` と、元の取得時刻 `retrieved_at_utc` を記録する。`request.json` の `attempted_score_calls` はCLIが開始した `score_variant()` の累計で、SDK内部の再試行はこの件数に含めない。[SDKの再試行設定](https://github.com/google-deepmind/alphagenome/blob/v2.0.0/src/alphagenome/protos/v2/grpc_service_config.json)
 
 再開には同じモデル指定・SDK・scorer設定を使う。AG2の応答からサービス側のモデル改訂IDは得られないため、更新後の結果を取得したい場合は新しい実行と新しいキャッシュを使う。[AG2の応答仕様](https://github.com/google-deepmind/alphagenome/blob/v2.0.0/src/alphagenome/protos/v2/dna_model_service.proto#L193-L222)
 

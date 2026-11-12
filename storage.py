@@ -137,10 +137,6 @@ class RunStore:
         with self._db:
             self._db.execute("UPDATE execution SET attempted_calls = attempted_calls + 1 WHERE singleton = 1")
 
-    @property
-    def completed_outcomes(self) -> int:
-        return self._db.execute("SELECT count(*) FROM outcomes WHERE status != 'api_error'").fetchone()[0]
-
     def get_group(self, input_id: str, condition: str) -> dict[str, Outcome]:
         rows = self._db.execute("""SELECT scorer, status, payload, row_count, error, source, retrieved_at_utc
             FROM outcomes WHERE input_id = ? AND condition = ?""", (input_id, condition))
