@@ -50,6 +50,21 @@ apol4	chr22	36201698	A	C
 
 スコア取得の予定件数は、REF照合を通った入力行数と条件数の積。1,000行を4条件で評価すると4,000件、20条件では20,000件になる。1条件内の複数scorerは1件にまとめる。実行時の `request.json` には、実際に指定した条件ごとのscorerと使用したパネルを記録する。[AG2の条件指定](https://www.alphagenomedocs.com/user_guides/ag1_vs_ag2.html#conditions)
 
+## 中断からの再開と実行間キャッシュ
+
+`score.py` は取得のたびにスコアと進捗を出力先の `run.sqlite` に保存する。中断・取得エラーの後は同じ実行ディレクトリを指定して、失敗した取得と未実行の取得を再開する。元の入力と条件は実行ディレクトリから読み込む。取得済みのスコアだけで完了する場合は認証も省略できる。
+
+```powershell
+.\.venv\Scripts\python.exe score.py --resume 'C:\path\to\data\ag2-retina-rpe' `
+  --api-key-file 'C:\path\to\private\api_key.txt'
+```
+
+別の実行で取得済みスコアを再利用する場合は `--cache-dir 'C:\path\to\cache\ag2'` を追加する。指定は任意で、再開時は保存済みの指定を引き継ぐ。同じ変異・窓・条件・モデル指定・SDK版でscorer設定が一致する結果を再利用し、未取得のscorerを条件ごとにまとめる。行が返らなかった取得は、その実行内の完了として扱う。別実行間のキャッシュにはスコア行がある応答を保存する。
+
+`--dry-run --cache-dir ...` では、既存キャッシュだけを読み、命中したscorer件数と新規取得の予定件数を追加表示する。実行後の `requests.tsv` には `api`／`cache` と、元の取得時刻 `retrieved_at_utc` を記録する。`request.json` の `attempted_score_calls` はCLIが開始した `score_variant()` の累計で、SDK内部の再試行はこの件数に含めない。[SDKの再試行設定](https://github.com/google-deepmind/alphagenome/blob/v2.0.0/src/alphagenome/protos/v2/grpc_service_config.json)
+
+再開には同じモデル指定・SDK・scorer設定を使う。AG2の応答からサービス側のモデル改訂IDは得られないため、更新後の結果を取得したい場合は新しい実行と新しいキャッシュを使う。[AG2の応答仕様](https://github.com/google-deepmind/alphagenome/blob/v2.0.0/src/alphagenome/protos/v2/dna_model_service.proto#L193-L222)
+
 ## 保存済みスコアから遺伝子候補を調べる
 
 `score.py` の出力ディレクトリを `--run-dir` に渡すと、保存済みのスコアから遺伝子別の集約と変異別の評価範囲を出力する。

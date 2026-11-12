@@ -2,6 +2,7 @@
 
 import argparse
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 import csv
 from dataclasses import dataclass
 import io
@@ -9,6 +10,10 @@ import json
 import math
 from pathlib import Path
 import sys
+
+from filelock import Timeout
+
+from storage import run_lock
 
 
 EXPRESSION_SCORERS = ("SC_GENE_EXPRESSION", "RNA_SEQ")
@@ -250,16 +255,17 @@ def write_summaries(output: Path, inputs, conditions, thresholds, requests, gene
 def summarize(run_dir: Path, output: Path, thresholds: dict[str, float]) -> None:
     if output.exists():
         raise ValueError(f"Choose a new output directory: {output}")
-    manifest = json.loads((run_dir / "request.json").read_text(encoding="utf-8-sig"))
-    if not isinstance(manifest, dict):
-        raise ValueError("request.json must contain a run record.")
-    conditions = planned_conditions(manifest)
-    unknown = thresholds.keys() - conditions.keys()
-    if unknown:
-        raise ValueError(f"Thresholds provided for unrequested scorers: {', '.join(sorted(unknown))}.")
-    inputs = read_inputs(run_dir)
-    requests = read_requests(run_dir, inputs, conditions)
-    genes, observed, finite = read_scores(run_dir, requests)
+    with run_lock(run_dir) if (run_dir / "run.sqlite").is_file() else nullcontext():
+        manifest = json.loads((run_dir / "request.json").read_text(encoding="utf-8-sig"))
+        if not isinstance(manifest, dict):
+            raise ValueError("request.json must contain a run record.")
+        conditions = planned_conditions(manifest)
+        unknown = thresholds.keys() - conditions.keys()
+        if unknown:
+            raise ValueError(f"Thresholds provided for unrequested scorers: {', '.join(sorted(unknown))}.")
+        inputs = read_inputs(run_dir)
+        requests = read_requests(run_dir, inputs, conditions)
+        genes, observed, finite = read_scores(run_dir, requests)
 
     output.mkdir(parents=True)
     write_summaries(output, inputs, conditions, thresholds, requests, genes, observed, finite)
@@ -293,6 +299,9 @@ def main() -> int:
                 raise ValueError(f"Threshold must be finite and nonnegative: {arg}.")
             thresholds[scorer] = threshold
         summarize(args.run_dir, args.output_dir, thresholds)
+    except Timeout:
+        print("The scoring run is locked by another process.", file=sys.stderr)
+        return 1
     except (OSError, ValueError, csv.Error) as exc:
         print(exc, file=sys.stderr)
         return 1
