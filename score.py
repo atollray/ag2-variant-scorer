@@ -17,12 +17,17 @@ from alphagenome.models.v2 import dna_client, variant_scorers
 
 from pilot import MODEL_VERSION, ORGANISM, api_key_from_file_or_environment
 from reference import IndexedReference
+from splicing import SPLICE_OUTPUTS, observed_summary
 
 
 WINDOW_BP = dna_client.SEQUENCE_LENGTH_1MB
 INPUT_COLUMNS = ("input_id", "chromosome", "position", "ref", "alt")
 SCORE_IDS = ("input_id", "requested_condition", "requested_scorer")
 REQUEST_COLUMNS = (*SCORE_IDS, "scored_interval", "status", "score_rows", "error")
+SUMMARY_COLUMNS = (
+    "input_id", "requested_condition", *SPLICE_OUTPUTS,
+    "merged_splicing", "missing_observed_components",
+)
 
 
 def read_variants(
@@ -103,6 +108,8 @@ def run_batch(args: argparse.Namespace) -> bool:
 
     requests = []
     tables = []
+    merge_splicing = set(SPLICE_OUTPUTS).issubset(args.scorer)
+    summaries = []
     api_error = None
     started_at = datetime.now(timezone.utc)
     for (input_id, variant), condition in product(variants.items(), args.condition):
@@ -121,6 +128,7 @@ def run_batch(args: argparse.Namespace) -> bool:
             print(f"{input_id}, {condition}: API returned {api_error}. Stopped.", file=sys.stderr)
             break
 
+        pair_tables = []
         for name, result in zip(args.scorer, response, strict=True):
             scores = variant_scorers.tidy_anndata(result, match_gene_strand=True)
             status = "no_rows" if scores.empty else "scored"
@@ -129,7 +137,15 @@ def run_batch(args: argparse.Namespace) -> bool:
                 scores.insert(0, "requested_scorer", name)
                 scores.insert(0, "requested_condition", condition)
                 scores.insert(0, "input_id", input_id)
-                tables.append(scores)
+                pair_tables.append(scores)
+        pair_scores = pd.concat(pair_tables, ignore_index=True) if pair_tables else pd.DataFrame()
+        if not pair_scores.empty:
+            tables.append(pair_scores)
+        if merge_splicing:
+            summaries.append({
+                "input_id": input_id, "requested_condition": condition,
+                **observed_summary(pair_scores),
+            })
         print(f"{input_id}, {condition}: scored {len(scorers)} requested scorers", flush=True)
 
     scores = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame(
@@ -139,6 +155,10 @@ def run_batch(args: argparse.Namespace) -> bool:
     pd.DataFrame(requests, columns=REQUEST_COLUMNS).to_csv(
         output / "requests.tsv", sep="\t", index=False, encoding="utf-8"
     )
+    if merge_splicing:
+        pd.DataFrame(summaries, columns=SUMMARY_COLUMNS).to_csv(
+            output / "splicing_summary.tsv", sep="\t", index=False, encoding="utf-8"
+        )
     metadata = {
         "started_at_utc": started_at.isoformat(),
         "assembly": "GRCh38",
@@ -148,6 +168,7 @@ def run_batch(args: argparse.Namespace) -> bool:
         "window_bp": WINDOW_BP,
         "conditions": args.condition,
         "scorers": args.scorer,
+        "splicing_summary_tracks": "observed" if merge_splicing else None,
         "verified_variants": len(variants),
         "rejected_rows": len(rejected),
         "planned_score_calls": len(variants) * len(args.condition),

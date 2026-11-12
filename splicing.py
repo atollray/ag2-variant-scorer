@@ -22,9 +22,11 @@ CONTROL = genome.Variant(
 
 
 def observed_summary(scores: pd.DataFrame) -> dict:
-    observed = scores.loc[scores["imputation_mode"].eq("observed")]
-    observed = observed.loc[np.isfinite(observed["raw_score"])]
-    maxima = observed.groupby("output_type")["raw_score"].agg(lambda values: values.abs().max()).dropna()
+    maxima = {}
+    if not scores.empty:
+        observed = scores.loc[scores["imputation_mode"].eq("observed")]
+        observed = observed.loc[np.isfinite(observed["raw_score"])]
+        maxima = observed["raw_score"].abs().groupby(observed["output_type"]).max().dropna()
     components = {name: maxima.get(name) for name in SPLICE_OUTPUTS}
     missing = [name for name, value in components.items() if value is None]
     merged = None

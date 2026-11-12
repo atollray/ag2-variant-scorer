@@ -18,9 +18,9 @@ CONDITIONS = ("UBERON:0000053_CL:0000573", "UBERON:0000053_CL:0002586")
 SCORERS = ("RNA_SEQ", "RNA_SEQ_ACTIVE")
 
 
-def score_row(raw_score: float, imputation_mode: str) -> pd.DataFrame:
+def score_row(raw_score: float, imputation_mode: str, output_type: str = "RNA_SEQ") -> pd.DataFrame:
     return pd.DataFrame({
-        "output_type": ["RNA_SEQ"],
+        "output_type": [output_type],
         "raw_score": [raw_score],
         "imputation_mode": [imputation_mode],
     })
@@ -55,7 +55,7 @@ class ScoreCliTest(unittest.TestCase):
             score.variant_scorers, "tidy_anndata", side_effect=lambda table, **_: table.copy()
         ))
 
-    def run_cli(self, rows: str) -> int:
+    def run_cli(self, rows: str, scorers: tuple[str, ...] = SCORERS) -> int:
         self.variants.write_text(
             "input_id\tchromosome\tposition\tref\talt\n" + rows, encoding="utf-8"
         )
@@ -65,7 +65,7 @@ class ScoreCliTest(unittest.TestCase):
         ]
         for condition in CONDITIONS:
             args.extend(["--condition", condition])
-        for scorer in SCORERS:
+        for scorer in scorers:
             args.extend(["--scorer", scorer])
         with mock.patch.object(sys, "argv", args), mock.patch.dict(
             os.environ, {"ALPHAGENOME_API_KEY": "offline-fixture-key"}
@@ -94,6 +94,7 @@ class ScoreCliTest(unittest.TestCase):
                 score.variant_scorers.RECOMMENDED_VARIANT_SCORERS[name] for name in SCORERS
             ])
         self.model.predict_variant.assert_not_called()
+        self.assertFalse((self.output / "splicing_summary.tsv").exists())
 
         rows = self.read_tsv("scores.tsv")
         self.assertEqual(len(rows), 4)
@@ -135,3 +136,41 @@ class ScoreCliTest(unittest.TestCase):
             (CONDITIONS[1], SCORERS[0]): ("api_error", 0),
             (CONDITIONS[1], SCORERS[1]): ("api_error", 0),
         })
+
+    def test_splicing_summary_uses_observed_components_per_condition(self):
+        sites, usage, junctions = ("SPLICE_SITES", "SPLICE_SITE_USAGE", "SPLICE_JUNCTIONS")
+        self.model.score_variant.side_effect = [
+            [
+                pd.concat([
+                    score_row(-0.25, "observed", sites),
+                    score_row(0.95, "imputed_exploratory", sites),
+                ], ignore_index=True),
+                score_row(0.5, "observed", usage),
+                score_row(4.0, "observed", junctions),
+            ],
+            [
+                score_row(0.4, "observed", sites),
+                score_row(0.7, "imputed_exploratory", usage),
+                score_row(2.0, "observed", junctions),
+            ],
+            Unavailable("Offline fixture RPC failure."),
+        ]
+
+        self.assertEqual(self.run_cli(
+            "checked\tchr22\t600001\tA\tC\ninterrupted\tchr22\t600002\tA\tT\n",
+            scorers=(sites, usage, junctions),
+        ), 1)
+
+        rows = self.read_tsv("splicing_summary.tsv")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["input_id"] for row in rows}, {"checked"})
+        by_condition = {row["requested_condition"]: row for row in rows}
+        full = by_condition[CONDITIONS[0]]
+        self.assertEqual([float(full[name]) for name in (sites, usage, junctions)], [0.25, 0.5, 4.0])
+        self.assertAlmostEqual(float(full["merged_splicing"]), 1.55)
+        self.assertEqual(full["missing_observed_components"], "")
+
+        incomplete = by_condition[CONDITIONS[1]]
+        self.assertEqual(incomplete[usage], "")
+        self.assertEqual(incomplete["merged_splicing"], "")
+        self.assertEqual(incomplete["missing_observed_components"], usage)

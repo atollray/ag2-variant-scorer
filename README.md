@@ -28,11 +28,14 @@ apol4	chr22	36201698	A	C
 | `scores.tsv` | 遺伝子・接合部・トラック別のスコア。`input_id`、`requested_condition`、`requested_scorer`、`raw_score`、`imputation_mode` を保持 |
 | `conditions.tsv` | 指定した参照条件のメタデータ |
 | `requests.tsv` | 要求ごとの状態とスコア行数 |
+| `splicing_summary.tsv` | スプライシング3種をすべて指定した場合に、変異・条件ごとの成分値と統合値を保存 |
 | `variants.tsv` | 入力変異の控え |
 | `request.json` | 指定条件・スコア、モデルとSDK版などの実行記録 |
 | `rejected.tsv` | REF不一致などで除外した入力行と理由。該当時のみ作成 |
 
 入力の不正行は記録して、処理可能な行を続行する。スコア取得中にAPIエラーが起きた場合は、取得済みの結果を保存して処理を打ち切る。どちらの場合も終了コードは `1`。
+
+統合スプライシングスコアは、各成分について有限な `observed` トラックの最大絶対値を求め、`SPLICE_SITES + SPLICE_SITE_USAGE + SPLICE_JUNCTIONS / 5` で計算する。条件ごとに集約し、成分が欠ける場合は統合値を空欄にして `missing_observed_components` に不足成分を記録する。黄斑の錐体とRPEの例では統合値が空欄になり、探索的予測の個別値は `scores.tsv` に残る。[公式の統合スコア](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html#combine-the-splicing-scores)
 
 ## 初回検証の再実行
 
