@@ -1,6 +1,6 @@
 # ag2-variant-scorer
 
-AlphaGenome 2の予測APIで公開変異を評価し、同じ変異のスコアを細胞条件ごとに記録するためのローカル検証プロジェクト。
+AlphaGenome 2の予測APIで公開SNVと合成構造変異を評価し、変異スコアを細胞条件ごとに記録するためのローカル検証プロジェクト。
 
 ## 初回検証の再実行
 
@@ -23,6 +23,12 @@ python -m venv .venv
 | `conditions.tsv` | 条件ID、名前、RNA-seqの出力区分 |
 | `scores.tsv` | 2条件の遺伝子・トラック別スコア。`requested_condition` で要求条件を識別 |
 | `request.json` | 入力、窓、モデル指定、SDK版、取得時刻。両条件の保存後に作成 |
+
+## 合成SVの検証を再実行する
+
+上と同じ実行コマンドに `--sv` を加え、新しい出力先を指定する。GRCh38 `chr22:36202000–36202999`（1-based、両端を含む）の1,000 bp単純欠失と、同方向に1コピーを追加するタンデム重複を評価する。FASTAから両例のREF・ALT配列を構成し、左正規化後にREFと変異後配列を照合する。両例を同じ1,048,576 bp窓と上記2条件でスコアリングする。
+
+`scores.tsv` の `variant_case` で合成例を区別する。`request.json` に、対象区間、正規化後の位置、REF・ALTの全配列、長さ変化を記録する。確認対象はこの2例の `RNA_SEQ` スコア取得。スコアの計算では欠失・挿入後の信号をREF座標に整列する。[公式のスコア定義](https://www.alphagenomedocs.com/variant_scoring.html)
 
 ## 再利用したコード
 

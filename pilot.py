@@ -1,4 +1,4 @@
-"""Score one public GRCh38 SNV in two AlphaGenome 2 reference conditions."""
+"""Score the GRCh38 SNV or synthetic SV examples in two AG2 reference conditions."""
 
 import argparse
 from datetime import datetime, timezone
@@ -15,7 +15,8 @@ import pandas as pd
 from alphagenome.data import genome
 from alphagenome.models.v2 import dna_client, variant_scorers
 
-from reference import verify_snv_reference
+from reference import IndexedReference, verify_snv_reference
+from sv_examples import AFFECTED_REGION, prepare_sv_examples
 
 
 VARIANT = genome.Variant(
@@ -38,12 +39,17 @@ def api_key_from_file_or_environment(path: Path | None) -> str:
     return key
 
 
-def run_pilot(reference: Path, api_key_file: Path | None, output: Path) -> None:
+def run_pilot(reference: Path, api_key_file: Path | None, output: Path, *, sv: bool = False) -> None:
     if output.exists():
         raise ValueError(f"Choose a new output directory: {output}")
-    verify_snv_reference(reference, VARIANT)
-
-    interval = VARIANT.reference_interval.resize(dna_client.SEQUENCE_LENGTH_1MB)
+    if sv:
+        cases = prepare_sv_examples(IndexedReference(reference))
+        center = AFFECTED_REGION
+    else:
+        verify_snv_reference(reference, VARIANT)
+        cases = {"GLB1L_SNV": VARIANT}
+        center = VARIANT.reference_interval
+    interval = center.resize(dna_client.SEQUENCE_LENGTH_1MB)
     model = dna_client.create(
         api_key_from_file_or_environment(api_key_file), model_version=MODEL_VERSION, timeout=30
     )
@@ -57,37 +63,36 @@ def run_pilot(reference: Path, api_key_file: Path | None, output: Path) -> None:
     scorer = variant_scorers.RECOMMENDED_VARIANT_SCORERS[SCORER]
     sdk_version = version("alphagenome")
     tables = []
-    for condition in CONDITIONS:
-        response = model.score_variant(
-            interval=interval,
-            variant=VARIANT,
-            variant_scorers=[scorer],
-            organism=ORGANISM,
-            condition=condition,
-        )
-        scores = variant_scorers.tidy_scores(response, match_gene_strand=True)
-        if scores is None or scores.empty:
-            raise ValueError(f"Empty RNA_SEQ response for {condition}.")
+    for case_id, variant in cases.items():
+        for condition in CONDITIONS:
+            response = model.score_variant(
+                interval=interval,
+                variant=variant,
+                variant_scorers=[scorer],
+                organism=ORGANISM,
+                condition=condition,
+            )
+            scores = variant_scorers.tidy_scores(response, match_gene_strand=True)
+            if scores is None or scores.empty:
+                raise ValueError(f"Empty RNA_SEQ response for {case_id}, {condition}.")
 
-        observed_target = scores.loc[
-            scores["gene_id"].eq(TARGET_GENE) & scores["imputation_mode"].eq("observed"),
-            "raw_score",
-        ]
-        if not observed_target.dropna().map(math.isfinite).any():
-            raise ValueError(f"No finite GLB1L score on an observed track for {condition}.")
+            observed = scores.loc[scores["imputation_mode"].eq("observed")]
+            if not sv:
+                observed = observed.loc[observed["gene_id"].eq(TARGET_GENE)]
+            if not observed["raw_score"].dropna().map(math.isfinite).any():
+                raise ValueError(f"No finite observed-track score for {case_id}, {condition}.")
 
-        scores.insert(0, "requested_condition", condition)
-        scores.insert(1, "sdk_version", sdk_version)
-        tables.append(scores)
-        print(f"{condition}: {len(scores)} score rows", flush=True)
+            scores.insert(0, "requested_condition", condition)
+            scores.insert(1, "sdk_version", sdk_version)
+            if sv:
+                scores.insert(0, "variant_case", case_id)
+            tables.append(scores)
+            print(f"{case_id}, {condition}: {len(scores)} score rows", flush=True)
 
     metadata = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "assembly": "GRCh38",
-        "variant": str(VARIANT),
-        "reference_allele_verified": VARIANT.reference_bases,
         "interval_0_based_half_open": [interval.chromosome, interval.start, interval.end],
-        "target_gene_id": TARGET_GENE,
         "conditions": list(CONDITIONS),
         "scorer": SCORER,
         "model_version": MODEL_VERSION.name,
@@ -96,6 +101,24 @@ def run_pilot(reference: Path, api_key_file: Path | None, output: Path) -> None:
         "python_version": platform.python_version(),
         "match_gene_strand": True,
     }
+    if sv:
+        metadata["affected_region_1_based_inclusive"] = [
+            center.chromosome, center.start + 1, center.end
+        ]
+        metadata["cases"] = {
+            case_id: {
+                "chromosome": variant.chromosome,
+                "position_1_based": variant.position,
+                "reference_bases": variant.reference_bases,
+                "alternate_bases": variant.alternate_bases,
+                "length_change_bp": len(variant.alternate_bases) - len(variant.reference_bases),
+            }
+            for case_id, variant in cases.items()
+        }
+    else:
+        metadata.update(
+            variant=str(VARIANT), reference_allele_verified=VARIANT.reference_bases, target_gene_id=TARGET_GENE
+        )
 
     output.mkdir(parents=True)
     selected.to_csv(output / "conditions.tsv", sep="\t", encoding="utf-8")
@@ -113,9 +136,10 @@ def main() -> int:
     parser.add_argument("--reference", required=True, type=Path, help="Indexed GRCh38 FASTA")
     parser.add_argument("--api-key-file", type=Path, help="Private text file containing the API key")
     parser.add_argument("--output-dir", required=True, type=Path, help="New directory for results")
+    parser.add_argument("--sv", action="store_true", help="Score the two synthetic SV examples")
     args = parser.parse_args()
     try:
-        run_pilot(args.reference, args.api_key_file, args.output_dir)
+        run_pilot(args.reference, args.api_key_file, args.output_dir, sv=args.sv)
     except grpc.FutureTimeoutError:
         print("Timed out connecting to the AlphaGenome API.", file=sys.stderr)
         return 1
