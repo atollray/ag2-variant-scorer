@@ -1,4 +1,4 @@
-"""Score the GRCh38 SNV or synthetic SV examples in two AG2 reference conditions."""
+"""Run the AG2 RNA-seq or splicing pilot on public-reference examples."""
 
 import argparse
 from datetime import datetime, timezone
@@ -16,6 +16,7 @@ from alphagenome.data import genome
 from alphagenome.models.v2 import dna_client, variant_scorers
 
 from reference import IndexedReference, verify_snv_reference
+from splicing import run_splicing_pilot
 from sv_examples import AFFECTED_REGION, prepare_sv_examples
 
 
@@ -137,9 +138,16 @@ def main() -> int:
     parser.add_argument("--api-key-file", type=Path, help="Private text file containing the API key")
     parser.add_argument("--output-dir", required=True, type=Path, help="New directory for results")
     parser.add_argument("--sv", action="store_true", help="Score the two synthetic SV examples")
+    parser.add_argument("--splicing", action="store_true", help="Run the APOL4 splicing pilot")
     args = parser.parse_args()
     try:
-        run_pilot(args.reference, args.api_key_file, args.output_dir, sv=args.sv)
+        if args.splicing:
+            run_splicing_pilot(
+                args.reference, api_key_from_file_or_environment(args.api_key_file),
+                args.output_dir, include_sv=args.sv,
+            )
+        else:
+            run_pilot(args.reference, args.api_key_file, args.output_dir, sv=args.sv)
     except grpc.FutureTimeoutError:
         print("Timed out connecting to the AlphaGenome API.", file=sys.stderr)
         return 1

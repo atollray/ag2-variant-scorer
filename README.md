@@ -30,6 +30,19 @@ python -m venv .venv
 
 `scores.tsv` の `variant_case` で合成例を区別する。`request.json` に、対象区間、正規化後の位置、REF・ALTの全配列、長さ変化を記録する。確認対象はこの2例の `RNA_SEQ` スコア取得。スコアの計算では欠失・挿入後の信号をREF座標に整列する。[公式のスコア定義](https://www.alphagenomedocs.com/variant_scoring.html)
 
+## Splicingの検証を再実行する
+
+同じ実行コマンドに `--splicing --sv` を加え、新しい出力先を指定する。公式のAPOL4 SNV `chr22:36201698:A>C` と上記の合成DEL・タンデムDUPを、S状結腸 `UBERON:0001159` で評価する。`--splicing` のみではAPOL4 SNVを実行する。[公式のAPOL4例](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html)
+
+| 出力 | 内容 |
+| --- | --- |
+| 各変異の `scores.tsv` | `SPLICE_SITES`、`SPLICE_SITE_USAGE`、`SPLICE_JUNCTIONS` の `raw_score`。接合部の座標と鎖を保持 |
+| 各変異の `REF/` と `ALT/` | 3出力の `values.npz`、列順に対応するトラック表、接合部配列の行順に対応する `junctions.tsv` |
+| `summary.tsv` | 変異ごとに、`observed` トラックの成分別最大絶対値と `sites + usage + junctions / 5`。成分が欠ける場合は統合値を空欄とし、欠けた成分を明記 |
+| `request.json` | 入力アレル、予測窓、条件、SDK版、REF／ALTそれぞれの区間・解像度・配列形状 |
+
+REF／ALTの位置別予測は、SDKから返った座標でアレル別に保存する。SVの欠失区間・複製区間を比較するときは、構造に応じた座標対応を確かめる。統合値は予測変化の大きさをまとめた値で、各成分の最大値が異なる遺伝子や部位に由来することがある。[公式のスコア定義](https://www.alphagenomedocs.com/variant_scoring.html)
+
 ## 再利用したコード
 
 `reference.py` のFASTA読み取りとSNVのREF照合は、`atollray/alphagenome-variant-scorer` のコミット `9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc` にある `Reference` と `verified_normalize` の該当部分を基にしている。同コミットのApache-2.0ライセンスを `LICENSE` に収録した。[FASTA読み取りのコピー元](https://github.com/atollray/alphagenome-variant-scorer/blob/9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc/src/alphagenome_variant_scorer/reference.py)・[REF照合のコピー元](https://github.com/atollray/alphagenome-variant-scorer/blob/9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc/src/alphagenome_variant_scorer/variants.py)
