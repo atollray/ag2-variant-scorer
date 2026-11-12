@@ -5,6 +5,7 @@
 /.env
 /.env.*
 /config.local.*
+api_key.txt
 *.log
 *.sqlite
 *.sqlite-*
