@@ -2,6 +2,38 @@
 
 AlphaGenome 2の予測APIで公開SNVと合成構造変異を評価し、変異スコアを細胞条件ごとに記録するためのローカル検証プロジェクト。
 
+## 複数の参照条件とスコアを指定する
+
+Python 3.12、`requirements.txt` の依存パッケージ、AlphaGenome APIキー、`.fai` があるGRCh38 FASTAを用意する。入力の `variants.tsv` はUTF-8のタブ区切りとし、GRCh38の1-based座標とREF・ALTの実配列を指定する。スコア取得前にREFをFASTAと照合する。次は公式チュートリアルの公開APOL4 SNVを使った入力例。[公式のAPOL4例](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html)
+
+```tsv
+input_id	chromosome	position	ref	alt
+apol4	chr22	36201698	A	C
+```
+
+次のPowerShell例では、黄斑の錐体と網膜色素上皮（RPE）について、細胞タイプ別の遺伝子発現、バルクRNA-seq、スプライシング3種を取得する。`--condition` にはAG2の参照条件CURIE、`--scorer` には取得するスコア名を1項目ずつ指定する。同じスコア一覧を全条件に適用し、1変異・1,048,576 bp窓・1条件ごとにAPIを1回呼ぶ。[公式の条件選択ガイド](https://www.alphagenomedocs.com/colabs/v2/choosing_a_condition.html)・[複数スコアの取得例](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html#score-the-variant)
+
+```powershell
+.\.venv\Scripts\python.exe score.py --input variants.tsv --reference 'C:\path\to\hg38.fa' `
+  --condition 'UBERON:0000053_CL:0000573' --condition 'UBERON:0000053_CL:0002586' `
+  --scorer SC_GENE_EXPRESSION --scorer RNA_SEQ `
+  --scorer SPLICE_SITES --scorer SPLICE_SITE_USAGE --scorer SPLICE_JUNCTIONS `
+  --output-dir 'C:\path\to\data\ag2-retina-rpe' --api-key-file 'C:\path\to\private\api_key.txt'
+```
+
+`--output-dir` には新しいディレクトリを指定する。`ALPHAGENOME_API_KEY` 環境変数を使う場合は `--api-key-file` を省略できる。この2条件のスプライシングは探索的な補完予測（`imputed_exploratory`）にあたる。解釈時はトラックごとの `imputation_mode` を確認する。[公式の補完予測ガイド](https://www.alphagenomedocs.com/user_guides/imputation.html)
+
+| 出力 | 内容 |
+| --- | --- |
+| `scores.tsv` | 遺伝子・接合部・トラック別のスコア。`input_id`、`requested_condition`、`requested_scorer`、`raw_score`、`imputation_mode` を保持 |
+| `conditions.tsv` | 指定した参照条件のメタデータ |
+| `requests.tsv` | 要求ごとの状態とスコア行数 |
+| `variants.tsv` | 入力変異の控え |
+| `request.json` | 指定条件・スコア、モデルとSDK版などの実行記録 |
+| `rejected.tsv` | REF不一致などで除外した入力行と理由。該当時のみ作成 |
+
+入力の不正行は記録して、処理可能な行を続行する。スコア取得中にAPIエラーが起きた場合は、取得済みの結果を保存して処理を打ち切る。どちらの場合も終了コードは `1`。
+
 ## 初回検証の再実行
 
 Python 3.12で、AlphaGenome APIキーと既存の `.fai` を持つGRCh38 FASTAを用意する。参照配列のビルドは出典で確認する。スクリプトは対象座標のREF 1塩基を照合する。PowerShellでリポジトリのルートから実行する。
