@@ -9,6 +9,11 @@
 /.env.*
 /config.local.*
 api_key.txt
+*.private.*
+*.fa
+*.fasta
+*.fna
+*.fai
 *.log
 *.sqlite
 *.sqlite-*

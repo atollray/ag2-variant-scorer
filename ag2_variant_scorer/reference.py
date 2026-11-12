@@ -1,4 +1,8 @@
-"""Read an indexed reference without changing the FASTA or index."""
+"""Read an indexed reference without changing the FASTA or index.
+
+Adapted from the Apache-2.0 alphagenome-variant-scorer at 9b768c1.
+This version uses AlphaGenome 2 intervals and checks the complete REF allele.
+"""
 
 from pathlib import Path
 import warnings

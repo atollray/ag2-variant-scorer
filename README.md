@@ -1,24 +1,55 @@
 # ag2-variant-scorer
 
-AlphaGenome 2の予測APIでGRCh38の変異を細胞条件ごとにスコアリングし、保存済みの発現スコアから影響候補遺伝子を集約するローカルCLI。
+AlphaGenome 2の予測APIでGRCh38の変異を組織・細胞条件ごとにスコアリングするCLI。取得結果を保存し、中断した実行の再開、別実行でのキャッシュ再利用、発現スコアからの遺伝子候補の集約ができる。
 
 ## インストール
 
-Python 3.12以上を使う。次のPowerShellコマンドをリポジトリのルートで実行する。
+Python 3.12以上を使う。取得したソースのルートで、使用するOSに応じてインストールする。
+
+**Windows (PowerShell)**
 
 ```powershell
 python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install .
 .\.venv\Scripts\ag2-variant-scorer.exe --help
 ```
 
-仮想環境が有効な場合は `ag2-variant-scorer` で実行できる。各コマンドの引数は `ag2-variant-scorer score --help`、`ag2-variant-scorer resume --help`、`ag2-variant-scorer summarize --help` で確認する。
+**Linux**
+
+ディストリビューションが `venv` と `ensurepip` を別パッケージで提供する場合は、使用するPythonに対応する仮想環境用パッケージを用意する。
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install .
+.venv/bin/ag2-variant-scorer --help
+```
+
+仮想環境を有効にすると `ag2-variant-scorer` で実行できる。以下の例ではこのコマンド名を使う。仮想環境を有効にせず使う場合は、上のOS別の実行パスに置き換える。各サブコマンドの引数は `score --help`、`resume --help`、`summarize --help` で確認できる。
 
 リポジトリからの直接実行にも対応する。従来の `python score.py`、`python score.py --resume DIR`、`python summarize.py` を使う場合は、先に `python -m pip install -r requirements.txt` を実行する。
 
-## 複数の参照条件とスコアを指定する
+## 公開例で1件取得する
 
-AlphaGenome APIキーと、`.fai` があるGRCh38 FASTAを用意する。入力の `variants.tsv` はUTF-8のタブ区切りとし、GRCh38の1-based座標とREF・ALTの実配列を指定する。スコア取得前にREFをFASTAと照合する。次は公式チュートリアルの公開APOL4 SNVを使った入力例。[公式のAPOL4例](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html)
+GRCh38の非圧縮FASTAと、同じ場所にある `<FASTA名>.fai` を用意する。`samtools faidx /path/to/GRCh38.fa` でインデックスを作成できる。FASTAの染色体名は入力の染色体名と揃える。以下のコマンドでは参照ファイルとキーファイルのパスを手元のものに置き換える。
+
+[examples/apol4.tsv](examples/apol4.tsv) は公式チュートリアルの公開APOL4 SNVを使う。S状結腸の `RNA_SEQ` を指定し、まず事前確認を実行する。正しい参照ではREF照合1件、除外0件、予定1件と表示される。この手順はAPIキーなしで実行できる。[公式のAPOL4例](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html)
+
+```text
+ag2-variant-scorer score --input examples/apol4.tsv --reference "/path/to/GRCh38.fa" --condition UBERON:0001159 --scorer RNA_SEQ --dry-run
+```
+
+実際に取得するにはAlphaGenome APIキーを用意する。以下の例では出力先に新しい `runs/apol4` を指定する。認証を `ALPHAGENOME_API_KEY` 環境変数で設定済みの場合は `--api-key-file` を省略できる。[AlphaGenome APIキーの取得](https://alphagenome.google/api)
+
+```text
+ag2-variant-scorer score --input examples/apol4.tsv --reference "/path/to/GRCh38.fa" --condition UBERON:0001159 --scorer RNA_SEQ --output-dir runs/apol4 --cache-dir cache/ag2 --api-key-file "/path/to/private/api_key.txt"
+ag2-variant-scorer summarize --run-dir runs/apol4 --output-dir runs/apol4-summary
+```
+
+## 入力形式と複数条件での取得
+
+入力TSVはUTF-8のタブ区切りで、`input_id`、`chromosome`、`position`、`ref`、`alt` を用意する。`input_id` は入力内で一意にする。GRCh38の1-based座標と、REF・ALTの非空のA/C/G/T配列を指定する。indelやSVは、VCF形式のアンカー塩基を含む実配列で表す。スコア取得前にREFの全塩基をFASTAと照合する。
 
 ```tsv
 input_id	chromosome	position	ref	alt
@@ -28,7 +59,7 @@ apol4	chr22	36201698	A	C
 次のPowerShell例では、黄斑の錐体と網膜色素上皮（RPE）について、細胞タイプ別の遺伝子発現、バルクRNA-seq、スプライシング3種を取得する。`--condition` にはAG2の参照条件CURIE、`--scorer` には取得するスコア名を1項目ずつ指定する。同じスコア一覧を全条件に適用し、1変異・1,048,576 bp窓・1条件ごとにAPIを1回呼ぶ。[公式の条件選択ガイド](https://www.alphagenomedocs.com/colabs/v2/choosing_a_condition.html)・[複数スコアの取得例](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html#score-the-variant)
 
 ```powershell
-.\.venv\Scripts\ag2-variant-scorer.exe score --input variants.tsv --reference 'C:\path\to\hg38.fa' `
+.\.venv\Scripts\ag2-variant-scorer.exe score --input examples/apol4.tsv --reference 'C:\path\to\hg38.fa' `
   --condition 'UBERON:0000053_CL:0000573' --condition 'UBERON:0000053_CL:0002586' `
   --scorer SC_GENE_EXPRESSION --scorer RNA_SEQ `
   --scorer SPLICE_SITES --scorer SPLICE_SITE_USAGE --scorer SPLICE_JUNCTIONS `
@@ -57,7 +88,7 @@ apol4	chr22	36201698	A	C
 `--panel` にTOMLファイルを指定すると、参照条件ごとにscorerの一覧を設定できる。[網膜・RPEの設定例](panels/retina-rpe.toml)は、黄斑と周辺網膜の錐体・RPEの4条件で `SC_GENE_EXPRESSION` を取得する。パネルと `--condition`／`--scorer` による直接指定は実行ごとにどちらかを選ぶ。
 
 ```powershell
-.\.venv\Scripts\ag2-variant-scorer.exe score --input variants.tsv --reference 'C:\path\to\hg38.fa' `
+.\.venv\Scripts\ag2-variant-scorer.exe score --input examples/apol4.tsv --reference 'C:\path\to\hg38.fa' `
   --panel panels/retina-rpe.toml --dry-run
 ```
 
@@ -80,6 +111,8 @@ apol4	chr22	36201698	A	C
 
 再開には同じモデル指定・SDK・scorer設定を使う。AG2の応答からサービス側のモデル改訂IDは得られないため、更新後の結果を取得したい場合は新しい実行と新しいキャッシュを使う。[AG2の応答仕様](https://github.com/google-deepmind/alphagenome/blob/v2.0.0/src/alphagenome/protos/v2/dna_model_service.proto#L193-L222)
 
+スコア取得中にCtrl+Cで中断すると、取得済みの結果を出力して終了コード130を返す。プロセスが強制終了した場合は、最後にSQLiteへ保存された結果から再開できる。実行DBとキャッシュはローカルのファイルシステムに置く。Linuxの排他と再開はWSL2のext4で確認した。
+
 ## 保存済みスコアから遺伝子候補を調べる
 
 `score` の出力ディレクトリを `--run-dir` に渡すと、保存済みのスコアから遺伝子別の集約と変異別の評価範囲を出力する。
@@ -96,6 +129,10 @@ apol4	chr22	36201698	A	C
 | `summary.json` | 元の実行記録、集約した条件と閾値 |
 
 `SC_GENE_EXPRESSION` と `RNA_SEQ` はそれぞれ集約し、学習時に実測データがある `observed` トラックの有限値を使う。順位は変化の絶対値で付け、閾値なしでも出力する。抽出基準を指定する場合は `--threshold SC_GENE_EXPRESSION=0.2` のようにscorerごとに渡す。`0.2` は指定方法の例。候補なしは、対象条件をすべて評価でき、設定した閾値以上の効果が見つからなかった場合に記録する。取得エラーや未実行などの状態は候補判定と別に残す。
+
+## 入力・出力データの保管
+
+取得時は変異の座標・REF・ALT、予測窓、条件、scorerをAlphaGenome APIへ送る。`input_id` とTSVの追加列はローカルで扱う。`variants.tsv` には追加列も含めた入力の控えが保存される。実行DBには変異と結果が、共有キャッシュにはスコア応答が残る。実データ、認証ファイル、出力先とキャッシュはリポジトリの外に置く。公開例用の `runs/` と `cache/` はGitの除外設定に含まれる。
 
 ## 初回検証の再実行
 
@@ -141,3 +178,7 @@ REF／ALTの位置別予測は、SDKから返った座標でアレル別に保�
 ## 再利用したコード
 
 `ag2_variant_scorer/reference.py` のFASTA読み取りとSNVのREF照合は、`atollray/alphagenome-variant-scorer` のコミット `9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc` にある `Reference` と `verified_normalize` の該当部分を基にしている。同コミットのApache-2.0ライセンスを `LICENSE` に収録した。[FASTA読み取りのコピー元](https://github.com/atollray/alphagenome-variant-scorer/blob/9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc/src/alphagenome_variant_scorer/reference.py)・[REF照合のコピー元](https://github.com/atollray/alphagenome-variant-scorer/blob/9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc/src/alphagenome_variant_scorer/variants.py)
+
+## ライセンスとAPI利用条件
+
+このCLIのソースコードにはApache-2.0が適用される。AlphaGenome APIと予測結果にはGoogleの利用条件が適用される。研究用APIと出力の利用範囲、再配布、臨床判断に関する条件は公式案内を参照する。[CLIのライセンス](LICENSE)・[AlphaGenome利用規約](https://alphagenome.google/terms)・[公式FAQ](https://www.alphagenomedocs.com/faqs.html#what-terms-of-use-apply-and-is-commercial-access-available)
