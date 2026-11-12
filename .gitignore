@@ -1,0 +1,13 @@
+/.venv/
+/scratch/
+/runs/
+/cache/
+/.env
+/.env.*
+/config.local.*
+*.log
+*.sqlite
+*.sqlite-*
+__pycache__/
+*.py[cod]
+/.pytest_cache/
