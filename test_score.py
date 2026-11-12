@@ -1,6 +1,9 @@
 """Offline checks for the multi-condition scoring CLI."""
 
+from contextlib import redirect_stdout
 import csv
+import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -56,21 +59,35 @@ class ScoreCliTest(unittest.TestCase):
         ))
 
     def run_cli(self, rows: str, scorers: tuple[str, ...] = SCORERS) -> int:
+        options = ["--output-dir", str(self.output)]
+        for condition in CONDITIONS:
+            options.extend(["--condition", condition])
+        for scorer in scorers:
+            options.extend(["--scorer", scorer])
+        return self.invoke_cli(rows, options)
+
+    def invoke_cli(self, rows: str, options: list[str]) -> int:
         self.variants.write_text(
             "input_id\tchromosome\tposition\tref\talt\n" + rows, encoding="utf-8"
         )
         args = [
             "score.py", "--input", str(self.variants), "--reference", str(self.reference),
-            "--output-dir", str(self.output),
+            *options,
         ]
-        for condition in CONDITIONS:
-            args.extend(["--condition", condition])
-        for scorer in scorers:
-            args.extend(["--scorer", scorer])
         with mock.patch.object(sys, "argv", args), mock.patch.dict(
             os.environ, {"ALPHAGENOME_API_KEY": "offline-fixture-key"}
         ):
             return score.main()
+
+    def write_panel(self, condition_scorers: dict[str, list[str]]) -> Path:
+        path = self.reference.with_name("panel.toml")
+        condition_lines = [
+            f"{json.dumps(condition)} = {json.dumps(names)}"
+            for condition, names in condition_scorers.items()
+        ]
+        lines = ['name = "test panel"', 'version = 1', '[conditions]', *condition_lines]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
 
     def read_tsv(self, name: str) -> list[dict[str, str]]:
         with (self.output / name).open(encoding="utf-8-sig", newline="") as handle:
@@ -174,3 +191,55 @@ class ScoreCliTest(unittest.TestCase):
         self.assertEqual(incomplete[usage], "")
         self.assertEqual(incomplete["merged_splicing"], "")
         self.assertEqual(incomplete["missing_observed_components"], usage)
+
+    def test_panel_dry_run_checks_ref_without_model_or_output(self):
+        panel = Path(score.__file__).with_name("panels") / "retina-rpe.toml"
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), mock.patch.object(score, "api_key_from_file_or_environment") as key:
+            status = self.invoke_cli(
+                "checked\tchr22\t600001\tA\tC\nwrong_ref\tchr22\t600002\tC\tA\n",
+                ["--panel", str(panel), "--dry-run"],
+            )
+        self.assertEqual(status, 1)
+        key.assert_not_called()
+        score.dna_client.create.assert_not_called()
+        self.assertFalse(self.output.exists())
+        self.assertEqual(stdout.getvalue().splitlines(), [
+            "REF-verified rows: 1", "Rejected rows: 1", "Conditions: 4", "Planned score calls: 4",
+        ])
+
+    def test_panel_records_uneven_scorer_sets_and_preserves_results_after_error(self):
+        first, second = CONDITIONS
+        sites, usage, junctions = score.SPLICE_OUTPUTS
+        condition_scorers = {
+            first: ["SC_GENE_EXPRESSION"],
+            second: [sites, usage, junctions],
+        }
+        panel = self.write_panel(condition_scorers)
+        self.model.score_variant.side_effect = [
+            [score_row(0.2, "observed", "SC_GENE_EXPRESSION")],
+            [score_row(0.25, "observed", name) for name in condition_scorers[second]],
+            Unavailable("Offline fixture RPC failure."),
+        ]
+        self.assertEqual(self.invoke_cli(
+            "checked\tchr22\t600001\tA\tC\ninterrupted\tchr22\t600002\tA\tT\n",
+            ["--panel", str(panel), "--output-dir", str(self.output)],
+        ), 1)
+
+        calls = [call.kwargs for call in self.model.score_variant.call_args_list]
+        self.assertEqual([call["condition"] for call in calls], [first, second, first])
+        for call in calls:
+            self.assertEqual(list(call["variant_scorers"]), [
+                score.variant_scorers.RECOMMENDED_VARIANT_SCORERS[name]
+                for name in condition_scorers[call["condition"]]
+            ])
+        manifest = json.loads((self.output / "request.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["planned_score_calls"], 4)
+        self.assertEqual(manifest["attempted_score_calls"], 3)
+        self.assertEqual(manifest["condition_scorers"], condition_scorers)
+        self.assertEqual(manifest["panel"], {
+            "name": "test panel", "version": 1, "conditions": condition_scorers,
+        })
+        self.assertEqual(manifest["splicing_summary_tracks"], "observed")
+        self.assertEqual([row["requested_condition"] for row in self.read_tsv("splicing_summary.tsv")], [second])
+        self.assertEqual([row["status"] for row in self.read_tsv("requests.tsv")], ["scored"] * 4 + ["api_error"])

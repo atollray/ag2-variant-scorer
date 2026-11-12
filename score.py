@@ -9,6 +9,7 @@ from itertools import product
 import json
 from pathlib import Path
 import sys
+import tomllib
 
 import grpc
 import pandas as pd
@@ -74,14 +75,55 @@ def read_variants(
     return variants, rejected
 
 
-def run_batch(args: argparse.Namespace) -> bool:
+def read_panel(
+    path: Path, supported_scorers: list[str]
+) -> tuple[str, int | str, dict[str, list[str]]]:
+    with path.open("rb") as handle:
+        panel = tomllib.load(handle)
+
+    name = panel.get("name")
+    panel_version = panel.get("version")
+    conditions = panel.get("conditions")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Panel requires a nonempty name.")
+    if type(panel_version) is not int and not (
+        isinstance(panel_version, str) and panel_version.strip()
+    ):
+        raise ValueError("Panel version must be an integer or a nonempty string.")
+    if not isinstance(conditions, dict) or not conditions:
+        raise ValueError("Panel requires a nonempty [conditions] table.")
+    for condition, names in conditions.items():
+        if not condition or condition != condition.strip():
+            raise ValueError("Panel condition IDs must be nonempty and have no surrounding spaces.")
+        if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
+            raise ValueError(f"Panel condition {condition} requires a nonempty list of scorer names.")
+        if len(set(names)) != len(names):
+            raise ValueError(f"Panel condition {condition} contains duplicate scorers.")
+        unknown = set(names).difference(supported_scorers)
+        if unknown:
+            raise ValueError(f"Unsupported scorer(s) for {condition}: {', '.join(sorted(unknown))}.")
+    return name, panel_version, conditions
+
+
+def run_batch(
+    args: argparse.Namespace,
+    condition_scorers: dict[str, list[str]],
+    panel: dict | None,
+) -> bool:
     input_text = args.input.read_text(encoding="utf-8-sig")
     # Explicit SV alleles can exceed the CSV parser's default field limit.
     csv.field_size_limit(max(csv.field_size_limit(), len(input_text)))
     reference = IndexedReference(args.reference)
     variants, rejected = read_variants(input_text, reference)
+    planned_calls = len(variants) * len(condition_scorers)
+    if args.dry_run:
+        print(f"REF-verified rows: {len(variants)}")
+        print(f"Rejected rows: {len(rejected)}")
+        print(f"Conditions: {len(condition_scorers)}")
+        print(f"Planned score calls: {planned_calls}")
+        return not rejected
+
     recommended = variant_scorers.RECOMMENDED_VARIANT_SCORERS
-    scorers = [recommended[name] for name in args.scorer]
     output = args.output_dir
     if output.exists():
         raise ValueError(f"Choose a new output directory: {output}")
@@ -91,10 +133,10 @@ def run_batch(args: argparse.Namespace) -> bool:
             api_key_from_file_or_environment(args.api_key_file), model_version=MODEL_VERSION, timeout=30
         )
         catalog = model.supported_conditions(ORGANISM).set_index("condition")
-        unknown = set(args.condition).difference(catalog.index)
+        unknown = set(condition_scorers).difference(catalog.index)
         if unknown:
             raise ValueError(f"Unknown AG2 reference conditions: {', '.join(sorted(unknown))}")
-        conditions = catalog.loc[args.condition]
+        conditions = catalog.loc[list(condition_scorers)]
 
     output.mkdir(parents=True)
     (output / "variants.tsv").write_text(input_text, encoding="utf-8")
@@ -108,12 +150,18 @@ def run_batch(args: argparse.Namespace) -> bool:
 
     requests = []
     tables = []
-    merge_splicing = set(SPLICE_OUTPUTS).issubset(args.scorer)
+    splicing_conditions = {
+        condition for condition, names in condition_scorers.items()
+        if set(SPLICE_OUTPUTS).issubset(names)
+    }
     summaries = []
     api_error = None
+    attempted_calls = 0
     started_at = datetime.now(timezone.utc)
-    for (input_id, variant), condition in product(variants.items(), args.condition):
+    for (input_id, variant), (condition, names) in product(variants.items(), condition_scorers.items()):
         interval = variant.reference_interval.resize(WINDOW_BP)
+        scorers = [recommended[name] for name in names]
+        attempted_calls += 1
         try:
             response = model.score_variant(
                 interval=interval, variant=variant, variant_scorers=scorers,
@@ -123,13 +171,13 @@ def run_batch(args: argparse.Namespace) -> bool:
             api_error = exc.code().name
             requests.extend(
                 (input_id, condition, name, str(interval), "api_error", 0, api_error)
-                for name in args.scorer
+                for name in names
             )
             print(f"{input_id}, {condition}: API returned {api_error}. Stopped.", file=sys.stderr)
             break
 
         pair_tables = []
-        for name, result in zip(args.scorer, response, strict=True):
+        for name, result in zip(names, response, strict=True):
             scores = variant_scorers.tidy_anndata(result, match_gene_strand=True)
             status = "no_rows" if scores.empty else "scored"
             requests.append((input_id, condition, name, str(interval), status, len(scores), ""))
@@ -141,7 +189,7 @@ def run_batch(args: argparse.Namespace) -> bool:
         pair_scores = pd.concat(pair_tables, ignore_index=True) if pair_tables else pd.DataFrame()
         if not pair_scores.empty:
             tables.append(pair_scores)
-        if merge_splicing:
+        if condition in splicing_conditions:
             summaries.append({
                 "input_id": input_id, "requested_condition": condition,
                 **observed_summary(pair_scores),
@@ -155,7 +203,7 @@ def run_batch(args: argparse.Namespace) -> bool:
     pd.DataFrame(requests, columns=REQUEST_COLUMNS).to_csv(
         output / "requests.tsv", sep="\t", index=False, encoding="utf-8"
     )
-    if merge_splicing:
+    if splicing_conditions:
         pd.DataFrame(summaries, columns=SUMMARY_COLUMNS).to_csv(
             output / "splicing_summary.tsv", sep="\t", index=False, encoding="utf-8"
         )
@@ -166,16 +214,19 @@ def run_batch(args: argparse.Namespace) -> bool:
         "model_version": MODEL_VERSION.name,
         "sdk_version": version("alphagenome"),
         "window_bp": WINDOW_BP,
-        "conditions": args.condition,
-        "scorers": args.scorer,
-        "splicing_summary_tracks": "observed" if merge_splicing else None,
+        "conditions": list(condition_scorers),
+        "scorers": list(dict.fromkeys(name for names in condition_scorers.values() for name in names)),
+        "condition_scorers": condition_scorers,
+        "splicing_summary_tracks": "observed" if splicing_conditions else None,
         "verified_variants": len(variants),
         "rejected_rows": len(rejected),
-        "planned_score_calls": len(variants) * len(args.condition),
-        "attempted_score_calls": len(requests) // len(scorers),
+        "planned_score_calls": planned_calls,
+        "attempted_score_calls": attempted_calls,
         "api_error": api_error,
         "match_gene_strand": True,
     }
+    if panel is not None:
+        metadata["panel"] = panel
     manifest = output / "request.json.tmp"
     manifest.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     manifest.rename(output / "request.json")
@@ -191,17 +242,33 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="UTF-8 variant TSV")
     parser.add_argument("--reference", type=Path, required=True, help="Indexed GRCh38 FASTA")
-    parser.add_argument("--condition", action="append", required=True, help="AG2 reference condition; repeatable")
-    parser.add_argument("--scorer", action="append", choices=choices, required=True, help="AG2 scorer; repeatable")
-    parser.add_argument("--output-dir", type=Path, required=True, help="New directory for results")
+    parser.add_argument("--condition", action="append", help="AG2 reference condition; repeatable")
+    parser.add_argument("--scorer", action="append", choices=choices, help="AG2 scorer; repeatable")
+    parser.add_argument("--panel", type=Path, help="TOML mapping of reference conditions to scorers")
+    parser.add_argument("--dry-run", action="store_true", help="Verify REF and count planned score calls offline")
+    parser.add_argument("--output-dir", type=Path, help="New directory for results; required for scoring")
     parser.add_argument("--api-key-file", type=Path, help="Private text file containing the API key")
     args = parser.parse_args()
-    for name in ("condition", "scorer"):
-        values = getattr(args, name)
-        if len(set(values)) != len(values):
-            parser.error(f"Duplicate --{name} values.")
+    if args.panel is None:
+        if not args.condition or not args.scorer:
+            parser.error("Specify --panel or both --condition and --scorer.")
+        for name in ("condition", "scorer"):
+            values = getattr(args, name)
+            if len(set(values)) != len(values):
+                parser.error(f"Duplicate --{name} values.")
+    elif args.condition or args.scorer:
+        parser.error("--panel cannot be used with --condition or --scorer.")
+    if not args.dry_run and args.output_dir is None:
+        parser.error("--output-dir is required for scoring.")
+
     try:
-        complete = run_batch(args)
+        panel = None
+        if args.panel is None:
+            condition_scorers = dict.fromkeys(args.condition, args.scorer)
+        else:
+            name, panel_version, condition_scorers = read_panel(args.panel, choices)
+            panel = {"name": name, "version": panel_version, "conditions": condition_scorers}
+        complete = run_batch(args, condition_scorers, panel)
     except grpc.FutureTimeoutError:
         print("Timed out connecting to the AlphaGenome API.", file=sys.stderr)
         return 1
@@ -211,7 +278,8 @@ def main() -> int:
     except (OSError, ValueError, csv.Error) as exc:
         print(exc, file=sys.stderr)
         return 1
-    print(f"Results saved to {args.output_dir}")
+    if not args.dry_run:
+        print(f"Results saved to {args.output_dir}")
     return 0 if complete else 1
 
 

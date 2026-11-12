@@ -1,6 +1,6 @@
 # ag2-variant-scorer
 
-AlphaGenome 2の予測APIで公開SNVと合成構造変異を評価し、変異スコアを細胞条件ごとに記録するためのローカル検証プロジェクト。
+AlphaGenome 2の予測APIでGRCh38の変異を細胞条件ごとにスコアリングし、保存済みの発現スコアから影響候補遺伝子を集約するローカルCLI。
 
 ## 複数の参照条件とスコアを指定する
 
@@ -36,6 +36,36 @@ apol4	chr22	36201698	A	C
 入力の不正行は記録して、処理可能な行を続行する。スコア取得中にAPIエラーが起きた場合は、取得済みの結果を保存して処理を打ち切る。どちらの場合も終了コードは `1`。
 
 統合スプライシングスコアは、各成分について有限な `observed` トラックの最大絶対値を求め、`SPLICE_SITES + SPLICE_SITE_USAGE + SPLICE_JUNCTIONS / 5` で計算する。条件ごとに集約し、成分が欠ける場合は統合値を空欄にして `missing_observed_components` に不足成分を記録する。黄斑の錐体とRPEの例では統合値が空欄になり、探索的予測の個別値は `scores.tsv` に残る。[公式の統合スコア](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html#combine-the-splicing-scores)
+
+## 条件パネルとリクエスト件数の見積もり
+
+`--panel` にTOMLファイルを指定すると、参照条件ごとにscorerの一覧を設定できる。[網膜・RPEの設定例](panels/retina-rpe.toml)は、黄斑と周辺網膜の錐体・RPEの4条件で `SC_GENE_EXPRESSION` を取得する。パネルと `--condition`／`--scorer` による直接指定は実行ごとにどちらかを選ぶ。
+
+```powershell
+.\.venv\Scripts\python.exe score.py --input variants.tsv --reference 'C:\path\to\hg38.fa' `
+  --panel panels/retina-rpe.toml --dry-run
+```
+
+`--dry-run` はローカルでREFを照合し、照合を通った入力行数・条件数・予定スコア取得件数を表示する。APIキーなしで実行できる。取得するには `--dry-run` を `--output-dir 'C:\path\to\data\ag2-retina-rpe'` に替え、APIキーを設定する。
+
+スコア取得の予定件数は、REF照合を通った入力行数と条件数の積。1,000行を4条件で評価すると4,000件、20条件では20,000件になる。1条件内の複数scorerは1件にまとめる。実行時の `request.json` には、実際に指定した条件ごとのscorerと使用したパネルを記録する。[AG2の条件指定](https://www.alphagenomedocs.com/user_guides/ag1_vs_ag2.html#conditions)
+
+## 保存済みスコアから遺伝子候補を調べる
+
+`score.py` の出力ディレクトリを `--run-dir` に渡すと、保存済みのスコアから遺伝子別の集約と変異別の評価範囲を出力する。
+
+```powershell
+.\.venv\Scripts\python.exe summarize.py --run-dir 'C:\path\to\data\ag2-retina-rpe' `
+  --output-dir 'C:\path\to\data\ag2-retina-rpe-summary'
+```
+
+| 出力 | 内容 |
+| --- | --- |
+| `gene_summary.tsv` | 変異・遺伝子ID・scorer別の順位、符号付き最小値・最大値とその出典、指定時の `meets_threshold` |
+| `variant_summary.tsv` | 変異・scorer別の評価範囲、条件ごとの状態、閾値を指定した場合の候補判定 |
+| `summary.json` | 元の実行記録、集約した条件と閾値 |
+
+`SC_GENE_EXPRESSION` と `RNA_SEQ` はそれぞれ集約し、学習時に実測データがある `observed` トラックの有限値を使う。順位は変化の絶対値で付け、閾値なしでも出力する。抽出基準を指定する場合は `--threshold SC_GENE_EXPRESSION=0.2` のようにscorerごとに渡す。`0.2` は指定方法の例。候補なしは、対象条件をすべて評価でき、設定した閾値以上の効果が見つからなかった場合に記録する。取得エラーや未実行などの状態は候補判定と別に残す。
 
 ## 初回検証の再実行
 

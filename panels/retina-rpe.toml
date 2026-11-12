@@ -1,0 +1,10 @@
+name = "retina-rpe"
+version = 1
+
+[conditions]
+# 黄斑の錐体と網膜色素上皮
+"UBERON:0000053_CL:0000573" = ["SC_GENE_EXPRESSION"]
+"UBERON:0000053_CL:0002586" = ["SC_GENE_EXPRESSION"]
+# 周辺網膜の錐体と網膜色素上皮
+"UBERON:0013682_CL:0000573" = ["SC_GENE_EXPRESSION"]
+"UBERON:0013682_CL:0002586" = ["SC_GENE_EXPRESSION"]
