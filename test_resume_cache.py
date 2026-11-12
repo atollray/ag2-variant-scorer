@@ -13,7 +13,7 @@ from unittest import mock
 
 import pandas as pd
 
-import score
+from ag2_variant_scorer import score
 from test_score import CONDITIONS, Unavailable, score_row
 
 

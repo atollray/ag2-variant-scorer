@@ -10,8 +10,8 @@ import pandas as pd
 from alphagenome.data import genome
 from alphagenome.models.v2 import dna_client, variant_scorers
 
-from reference import IndexedReference
-from sv_examples import AFFECTED_REGION, prepare_sv_examples
+from .reference import IndexedReference
+from .sv_examples import AFFECTED_REGION, prepare_sv_examples
 
 
 SPLICE_OUTPUTS = ("SPLICE_SITES", "SPLICE_SITE_USAGE", "SPLICE_JUNCTIONS")

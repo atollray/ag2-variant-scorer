@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import summarize
+from ag2_variant_scorer import summarize
 
 
 CONE = "UBERON:0000053_CL:0000573"

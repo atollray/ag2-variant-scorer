@@ -1,4 +1,7 @@
 /.venv/
+/build/
+/dist/
+/*.egg-info/
 /scratch/
 /runs/
 /cache/

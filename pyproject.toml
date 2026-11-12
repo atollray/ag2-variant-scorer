@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ag2-variant-scorer"
+version = "0.1.0"
+description = "Score GRCh38 variants with AlphaGenome 2 and summarize gene effects"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dynamic = ["dependencies"]
+
+[project.scripts]
+ag2-variant-scorer = "ag2_variant_scorer.cli:main"
+
+[tool.setuptools]
+packages = ["ag2_variant_scorer"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}

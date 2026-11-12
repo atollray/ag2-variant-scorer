@@ -14,7 +14,7 @@ from unittest import mock
 import grpc
 import pandas as pd
 
-import score
+from ag2_variant_scorer import score
 
 
 CONDITIONS = ("UBERON:0000053_CL:0000573", "UBERON:0000053_CL:0002586")
@@ -193,7 +193,7 @@ class ScoreCliTest(unittest.TestCase):
         self.assertEqual(incomplete["missing_observed_components"], usage)
 
     def test_panel_dry_run_checks_ref_without_model_or_output(self):
-        panel = Path(score.__file__).with_name("panels") / "retina-rpe.toml"
+        panel = Path(__file__).with_name("panels") / "retina-rpe.toml"
         stdout = io.StringIO()
         with redirect_stdout(stdout), mock.patch.object(score, "api_key_from_file_or_environment") as key:
             status = self.invoke_cli(

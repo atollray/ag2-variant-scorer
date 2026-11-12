@@ -2,7 +2,7 @@
 
 from alphagenome.data import genome
 
-from reference import IndexedReference
+from .reference import IndexedReference
 
 
 # The affected interval is chr22:36202000–36202999 (1-based inclusive).

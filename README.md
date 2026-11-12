@@ -2,9 +2,23 @@
 
 AlphaGenome 2の予測APIでGRCh38の変異を細胞条件ごとにスコアリングし、保存済みの発現スコアから影響候補遺伝子を集約するローカルCLI。
 
+## インストール
+
+Python 3.12以上を使う。次のPowerShellコマンドをリポジトリのルートで実行する。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\ag2-variant-scorer.exe --help
+```
+
+仮想環境が有効な場合は `ag2-variant-scorer` で実行できる。各コマンドの引数は `ag2-variant-scorer score --help`、`ag2-variant-scorer resume --help`、`ag2-variant-scorer summarize --help` で確認する。
+
+リポジトリからの直接実行にも対応する。従来の `python score.py`、`python score.py --resume DIR`、`python summarize.py` を使う場合は、先に `python -m pip install -r requirements.txt` を実行する。
+
 ## 複数の参照条件とスコアを指定する
 
-Python 3.12、`requirements.txt` の依存パッケージ、AlphaGenome APIキー、`.fai` があるGRCh38 FASTAを用意する。入力の `variants.tsv` はUTF-8のタブ区切りとし、GRCh38の1-based座標とREF・ALTの実配列を指定する。スコア取得前にREFをFASTAと照合する。次は公式チュートリアルの公開APOL4 SNVを使った入力例。[公式のAPOL4例](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html)
+AlphaGenome APIキーと、`.fai` があるGRCh38 FASTAを用意する。入力の `variants.tsv` はUTF-8のタブ区切りとし、GRCh38の1-based座標とREF・ALTの実配列を指定する。スコア取得前にREFをFASTAと照合する。次は公式チュートリアルの公開APOL4 SNVを使った入力例。[公式のAPOL4例](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html)
 
 ```tsv
 input_id	chromosome	position	ref	alt
@@ -14,7 +28,7 @@ apol4	chr22	36201698	A	C
 次のPowerShell例では、黄斑の錐体と網膜色素上皮（RPE）について、細胞タイプ別の遺伝子発現、バルクRNA-seq、スプライシング3種を取得する。`--condition` にはAG2の参照条件CURIE、`--scorer` には取得するスコア名を1項目ずつ指定する。同じスコア一覧を全条件に適用し、1変異・1,048,576 bp窓・1条件ごとにAPIを1回呼ぶ。[公式の条件選択ガイド](https://www.alphagenomedocs.com/colabs/v2/choosing_a_condition.html)・[複数スコアの取得例](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html#score-the-variant)
 
 ```powershell
-.\.venv\Scripts\python.exe score.py --input variants.tsv --reference 'C:\path\to\hg38.fa' `
+.\.venv\Scripts\ag2-variant-scorer.exe score --input variants.tsv --reference 'C:\path\to\hg38.fa' `
   --condition 'UBERON:0000053_CL:0000573' --condition 'UBERON:0000053_CL:0002586' `
   --scorer SC_GENE_EXPRESSION --scorer RNA_SEQ `
   --scorer SPLICE_SITES --scorer SPLICE_SITE_USAGE --scorer SPLICE_JUNCTIONS `
@@ -31,6 +45,7 @@ apol4	chr22	36201698	A	C
 | `splicing_summary.tsv` | スプライシング3種をすべて指定した場合に、変異・条件ごとの成分値と統合値を保存 |
 | `variants.tsv` | 入力変異の控え |
 | `request.json` | 指定条件・スコア、モデルとSDK版などの実行記録 |
+| `run.sqlite` | 中断後の再開に使う進捗と取得済み応答 |
 | `rejected.tsv` | REF不一致などで除外した入力行と理由。該当時のみ作成 |
 
 入力の不正行は記録して、処理可能な行を続行する。スコア取得中にAPIエラーが起きた場合は、取得済みの結果を保存して処理を打ち切る。どちらの場合も終了コードは `1`。
@@ -42,7 +57,7 @@ apol4	chr22	36201698	A	C
 `--panel` にTOMLファイルを指定すると、参照条件ごとにscorerの一覧を設定できる。[網膜・RPEの設定例](panels/retina-rpe.toml)は、黄斑と周辺網膜の錐体・RPEの4条件で `SC_GENE_EXPRESSION` を取得する。パネルと `--condition`／`--scorer` による直接指定は実行ごとにどちらかを選ぶ。
 
 ```powershell
-.\.venv\Scripts\python.exe score.py --input variants.tsv --reference 'C:\path\to\hg38.fa' `
+.\.venv\Scripts\ag2-variant-scorer.exe score --input variants.tsv --reference 'C:\path\to\hg38.fa' `
   --panel panels/retina-rpe.toml --dry-run
 ```
 
@@ -52,10 +67,10 @@ apol4	chr22	36201698	A	C
 
 ## 中断からの再開と実行間キャッシュ
 
-`score.py` は取得のたびにスコアと進捗を出力先の `run.sqlite` に保存する。中断・取得エラーの後は同じ実行ディレクトリを指定して、失敗した取得と未実行の取得を再開する。元の入力と条件は実行ディレクトリから読み込む。取得済みのスコアだけで完了する場合は認証も省略できる。
+`score` は取得のたびにスコアと進捗を出力先の `run.sqlite` に保存する。中断・取得エラーの後は同じ実行ディレクトリを指定して、失敗した取得と未実行の取得を再開する。元の入力と条件は実行ディレクトリから読み込む。取得済みのスコアだけで完了する場合は認証も省略できる。
 
 ```powershell
-.\.venv\Scripts\python.exe score.py --resume 'C:\path\to\data\ag2-retina-rpe' `
+.\.venv\Scripts\ag2-variant-scorer.exe resume --run-dir 'C:\path\to\data\ag2-retina-rpe' `
   --api-key-file 'C:\path\to\private\api_key.txt'
 ```
 
@@ -67,10 +82,10 @@ apol4	chr22	36201698	A	C
 
 ## 保存済みスコアから遺伝子候補を調べる
 
-`score.py` の出力ディレクトリを `--run-dir` に渡すと、保存済みのスコアから遺伝子別の集約と変異別の評価範囲を出力する。
+`score` の出力ディレクトリを `--run-dir` に渡すと、保存済みのスコアから遺伝子別の集約と変異別の評価範囲を出力する。
 
 ```powershell
-.\.venv\Scripts\python.exe summarize.py --run-dir 'C:\path\to\data\ag2-retina-rpe' `
+.\.venv\Scripts\ag2-variant-scorer.exe summarize --run-dir 'C:\path\to\data\ag2-retina-rpe' `
   --output-dir 'C:\path\to\data\ag2-retina-rpe-summary'
 ```
 
@@ -125,4 +140,4 @@ REF／ALTの位置別予測は、SDKから返った座標でアレル別に保�
 
 ## 再利用したコード
 
-`reference.py` のFASTA読み取りとSNVのREF照合は、`atollray/alphagenome-variant-scorer` のコミット `9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc` にある `Reference` と `verified_normalize` の該当部分を基にしている。同コミットのApache-2.0ライセンスを `LICENSE` に収録した。[FASTA読み取りのコピー元](https://github.com/atollray/alphagenome-variant-scorer/blob/9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc/src/alphagenome_variant_scorer/reference.py)・[REF照合のコピー元](https://github.com/atollray/alphagenome-variant-scorer/blob/9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc/src/alphagenome_variant_scorer/variants.py)
+`ag2_variant_scorer/reference.py` のFASTA読み取りとSNVのREF照合は、`atollray/alphagenome-variant-scorer` のコミット `9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc` にある `Reference` と `verified_normalize` の該当部分を基にしている。同コミットのApache-2.0ライセンスを `LICENSE` に収録した。[FASTA読み取りのコピー元](https://github.com/atollray/alphagenome-variant-scorer/blob/9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc/src/alphagenome_variant_scorer/reference.py)・[REF照合のコピー元](https://github.com/atollray/alphagenome-variant-scorer/blob/9b768c199dfcfc4c7e2b3acbb003c8c7c54545dc/src/alphagenome_variant_scorer/variants.py)

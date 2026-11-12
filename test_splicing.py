@@ -3,7 +3,7 @@ import unittest
 import pandas as pd
 from alphagenome.data.genome import Interval
 
-from splicing import junction_row, observed_summary
+from ag2_variant_scorer.splicing import junction_row, observed_summary
 
 
 class SplicingTest(unittest.TestCase):
