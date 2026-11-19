@@ -134,6 +134,40 @@ apol4	chr22	36201698	A	C
 
 `SC_GENE_EXPRESSION` と `RNA_SEQ` はそれぞれ集約し、学習時に実測データがある `observed` トラックの有限値を使う。順位は変化の絶対値で付け、閾値なしでも出力する。抽出基準を指定する場合は `--threshold SC_GENE_EXPRESSION=0.2` のようにscorerごとに渡す。`0.2` は指定方法の例。候補なしは、対象条件をすべて評価でき、設定した閾値以上の効果が見つからなかった場合に記録する。取得エラーや未実行などの状態は候補判定と別に残す。
 
+### 遺伝子・細胞条件ごとに発現とスプライシングを確認する
+
+`summarize --gene-conditions` は、既存runの `scores.tsv` と要求台帳から、変異 × 入力窓 × 遺伝子ID × 条件の表をオフラインで作る。スプライシングのみを取得したrunでも使える。出力先には新規ディレクトリを指定する。
+
+```bash
+ag2-variant-scorer summarize --run-dir runs/apol4 --output-dir runs/apol4-genes --gene-conditions
+```
+
+| ファイル | 確認する内容 |
+| --- | --- |
+| `gene_conditions.tsv` | 各遺伝子の単一細胞・バルクの符号付きLFC、スプライシング3成分と統合値、確認理由。各LFC列はその遺伝子・条件のobservedトラックのうち絶対値最大の行。順位は変異・窓・条件内で指標別に計算する。 |
+| `expression_tracks.tsv` | 各トラックのLFCと対応するACTIVE、補完区分、選別理由、元レコード番号。遺伝子の代表トラックと選別条件を通ったトラックが異なる場合もたどれる。 |
+| `splice_components.tsv` | 遺伝子内で各成分の最大値となった元レコード。実測対応・補完の区分、トラック、接合部に返された座標と鎖を保持する。 |
+| `other_scores.tsv` | CAGE・ATACなど領域に付く出力、遺伝子IDがない行、遺伝子別集計の対象外の出力。近接遺伝子への割り当ては行わず、元の `scores.tsv` を参照できる。 |
+| `coverage.tsv` | 入力・条件・scorerごとの要求状態、応答行数、遺伝子別集計に使える有限なobserved行数。 |
+| `review_pairs.tsv`、`summary.json` | 選別条件を通った変異×遺伝子の一覧と、使用条件・件数。レコード番号は元の `scores.tsv` のデータ行を1から数える。 |
+
+単一細胞発現のCPM列はSDK 2.0.0の予測APIで照合した換算値。同一の窓・遺伝子・条件・トラック・鎖・補完区分でLFCとACTIVEが揃ったときに計算する。高い側は `exp(ACTIVE) - 0.001`、低い側は `exp(ACTIVE - abs(LFC)) - 0.001` で、LFCが正ならALTが高い。丸めによる負のCPMは0とする。ACTIVE未取得や別のSDK版では元のLFCを確認でき、換算CPMは空欄になる。
+
+遺伝子別の参考統合値は、先に遺伝子ID・窓・条件・補完区分を揃え、成分別の最大絶対値から `sites + usage + junctions / 5` を計算する。3成分が揃わない区分は空欄で、得られた成分は明細に残る。`splicing_observed` と `splicing_imputed_exploratory` は別の列。各成分の最大値は同じ遺伝子でも別の接合部・トラックから来る場合がある。全遺伝子を対象にする既存の `splicing_summary.tsv` は変異単位の概観に使う。[公式の定義と統合式](https://www.alphagenomedocs.com/colabs/v2/splicing_variant.html#combine-the-splicing-scores)
+
+候補を選ぶ場合は `--review-policy review.toml` を指定する（このオプションは `--gene-conditions` を含意する）。以下は記法の例。取得パネルとは別ファイルで、指定した条件を同じ保存済みrunに何度でも適用できる。
+
+```toml
+min_sc_abs_lfc = 0.1
+min_sc_active = 1.0
+rescue_sc_abs_lfc = 0.5
+limit = 20
+```
+
+単一細胞の主枠は同じobservedトラックで `abs(LFC) >= min_sc_abs_lfc` かつ `ACTIVE > min_sc_active` を満たした組。追加枠はACTIVEが同じ閾値以下で `abs(LFC) >= rescue_sc_abs_lfc` の組。ACTIVE欠測はどちらの発現量条件にも通さない。`min_sc_abs_lfc` 単独ならLFCだけで選べる。`min_rna_abs_lfc`、`min_splicing`（observed）、`min_exploratory_splicing`（探索用）はそれぞれ独立した下限で、いずれかの理由で候補に入る。`conditions = ["条件ID", ...]` で対象条件を絞れる。閾値の既定値はなく、未指定時は全件の明細と遺伝子表を確認する。
+
+条件をまたいで同じ変異×遺伝子は確認1組と数える。理由ごとに、その組で条件を満たした最大の効果量を順位付けし、最も良い順位から確認順を決める。同順位の順序は入力ID・遺伝子ID順。`limit` は上限内の組を `within_limit=1` として示す。全件表は保持する。変異種別は明示REF/ALTの配列形状で、50 bp以上の挿入・欠失を `large_insertion`・`large_deletion` とする。タンデム重複などの構造の確定には元のSV記録を参照する。
+
 ## 入力・出力データの保管
 
 取得時は変異の座標・REF・ALT、予測窓、条件、scorerをAlphaGenome APIへ送る。`input_id` とTSVの追加列はローカルで扱う。`variants.tsv` には追加列も含めた入力の控えが保存される。実行DBには変異と結果が、共有キャッシュにはスコア応答が残る。実データ、認証ファイル、出力先とキャッシュはリポジトリの外に置く。公開例用の `runs/` と `cache/` はGitの除外設定に含まれる。

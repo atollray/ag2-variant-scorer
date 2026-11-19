@@ -40,6 +40,7 @@ class InputRow:
     line: int
     input_id: str
     rejection: str | None = None
+    allele_type: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,20 @@ def tsv_rows(path: Path, required: tuple[str, ...]):
             if None in row or None in row.values():
                 raise ValueError(f"{path.name} line {reader.line_num} does not match the header.")
             yield row
+
+
+def allele_type(ref, alt):
+    if len(ref) == len(alt):
+        changes = sum(a != b for a, b in zip(ref, alt))
+        return {0: "unchanged", 1: "SNV"}.get(changes, "MNV")
+    short, long = sorted((ref, alt), key=len)
+    prefix = 0
+    while prefix < len(short) and short[prefix] == long[prefix]:
+        prefix += 1
+    if not long.endswith(short[prefix:]):
+        return "delins"
+    label = "insertion" if len(alt) > len(ref) else "deletion"
+    return ("large_" if len(long) - len(short) >= 50 else "") + label
 
 
 def read_inputs(run_dir: Path) -> list[InputRow]:
@@ -95,13 +110,16 @@ def read_inputs(run_dir: Path) -> list[InputRow]:
             if not input_id or input_id in accepted:
                 raise ValueError(f"Missing or duplicate input_id at unrejected input line {line}.")
             accepted.add(input_id)
-            inputs.append(InputRow(line, input_id))
+            ref = (row.get("ref") or "").strip().upper()
+            alt = (row.get("alt") or "").strip().upper()
+            kind = allele_type(ref, alt) if ref and alt else "unknown"
+            inputs.append(InputRow(line, input_id, allele_type=kind))
     if rejected or not inputs:
         raise ValueError("The input and rejection records do not describe a valid set of input rows.")
     return inputs
 
 
-def planned_conditions(manifest: dict) -> dict[str, list[str]]:
+def condition_plan(manifest: dict) -> dict[str, list[str]]:
     plan = manifest.get("condition_scorers")
     if plan is None:
         conditions = manifest.get("conditions")
@@ -112,10 +130,15 @@ def planned_conditions(manifest: dict) -> dict[str, list[str]]:
     if not isinstance(plan, dict):
         raise ValueError("request.json condition_scorers must map conditions to scorer lists.")
 
-    by_scorer = defaultdict(list)
     for condition, scorers in plan.items():
-        if not isinstance(scorers, list):
+        if not isinstance(scorers, list) or not all(isinstance(s, str) for s in scorers):
             raise ValueError(f"request.json must list the scorers for {condition}.")
+    return plan
+
+
+def planned_conditions(manifest: dict) -> dict[str, list[str]]:
+    by_scorer = defaultdict(list)
+    for condition, scorers in condition_plan(manifest).items():
         for name in EXPRESSION_SCORERS:
             if name in scorers:
                 by_scorer[name].append(condition)
@@ -289,6 +312,9 @@ def summarize(run_dir: Path, output: Path, thresholds: dict[str, float]) -> None
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--run-dir", type=Path, required=True, help="Saved scoring run directory")
     parser.add_argument("--output-dir", type=Path, required=True, help="New directory for summaries")
+    parser.add_argument("--gene-conditions", action="store_true",
+                        help="Build offline per-gene, per-condition expression and splicing tables")
+    parser.add_argument("--review-policy", type=Path, help="Gene-condition review settings (TOML); implies --gene-conditions")
     parser.add_argument(
         "--threshold", action="append", default=[], metavar="SCORER=VALUE",
         help="Nonnegative raw-score magnitude threshold; repeat for different expression scorers",
@@ -298,6 +324,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def run_cli(args: argparse.Namespace) -> int:
     thresholds = {}
     try:
+        if args.gene_conditions or args.review_policy:
+            from .candidates import write_candidates
+
+            if args.threshold:
+                raise ValueError("Use --review-policy for gene-condition thresholds.")
+            write_candidates(args.run_dir, args.output_dir, args.review_policy)
+            print(f"Gene-condition tables saved to {args.output_dir}")
+            return 0
         for arg in args.threshold:
             scorer, _, value = arg.partition("=")
             if scorer not in EXPRESSION_SCORERS or scorer in thresholds:
