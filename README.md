@@ -2,6 +2,8 @@
 
 AlphaGenome 2の予測APIでGRCh38の変異を組織・細胞条件ごとにスコアリングするCLI。取得結果を保存し、中断した実行の再開、別実行でのキャッシュ再利用、発現スコアからの遺伝子候補の集約ができる。
 
+SNV・indel・SVはいずれも、指定した条件でAG2の予測APIから新規スコアを取得する。AlphaGenome Atlasの事前計算済みSNVを照会する場合は、[AG1版のCLI](https://github.com/atollray/alphagenome-variant-scorer)を使用する。
+
 ## インストール
 
 Python 3.12以上を使う。取得したソースのルートで、使用するOSに応じてインストールする。
@@ -26,7 +28,7 @@ python3 -m venv .venv
 .venv/bin/ag2-variant-scorer --help
 ```
 
-仮想環境を有効にすると `ag2-variant-scorer` で実行できる。以下の例ではこのコマンド名を使う。仮想環境を有効にせず使う場合は、上のOS別の実行パスに置き換える。各サブコマンドの引数は `score --help`、`resume --help`、`summarize --help` で確認できる。
+以下の例の `ag2-variant-scorer` をそのまま使うには、PowerShellでは `.\.venv\Scripts\Activate.ps1`、Linuxのbashでは `source .venv/bin/activate` を実行する。仮想環境を有効にせず使う場合は、上のOS別の実行パスに置き換える。各サブコマンドの引数は、例えば `ag2-variant-scorer score --help` で確認できる。
 
 リポジトリからの直接実行にも対応する。従来の `python score.py`、`python score.py --resume DIR`、`python summarize.py` を使う場合は、先に `python -m pip install -r requirements.txt` を実行する。
 
@@ -50,6 +52,8 @@ ag2-variant-scorer summarize --run-dir runs/apol4 --output-dir runs/apol4-summar
 ## 入力形式と複数条件での取得
 
 入力TSVはUTF-8のタブ区切りで、`input_id`、`chromosome`、`position`、`ref`、`alt` を用意する。`input_id` は入力内で一意にする。GRCh38の1-based座標と、REF・ALTの非空のA/C/G/T配列を指定する。indelやSVは、VCF形式のアンカー塩基を含む実配列で表す。スコア取得前にREFの全塩基をFASTAと照合する。
+
+検証済みの変異種はSNV、短い挿入・欠失、単純なSV欠失、同方向のタンデム重複（1コピー追加）。`<DEL>`・`<DUP>` やAnnotSVの端点を持つ入力は、構造に対応するREF・ALTを用意してからTSVに変換する。REFの長さの上限は1,048,576 bp。
 
 ```tsv
 input_id	chromosome	position	ref	alt
